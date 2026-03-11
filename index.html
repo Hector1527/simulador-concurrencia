@@ -1,0 +1,1256 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>Simulador de Concurrencia - Restaurante</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #1e1208; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
+    canvas { display: block; }
+  </style>
+</head>
+<body>
+<script>
+// ============================================================
+// SIMULADOR DE CONCURRENCIA Y SINCRONIZACION
+// Analogia: Restaurante - Convertido a p5.js
+// ============================================================
+
+let currentMode = 0;
+let pulseTimer  = 0;
+
+const THREAD_COLORS = [
+  [255, 80,  80],
+  [80,  180, 255],
+  [80,  255, 140],
+  [255, 180, 50],
+  [200, 80,  255],
+];
+
+const MODE_NAMES = {
+  1: "1. CONDICION DE CARRERA",
+  2: "2. SEMAFORO",
+  3: "3. MUTEX + SECCION CRITICA",
+  4: "4. DEADLOCK",
+  5: "5. MONITOR",
+  6: "6. RECURSOS COMPARTIDOS + CONCURRENCIA",
+};
+
+// ================================================================
+// MODO 1: CONDICION DE CARRERA
+// ================================================================
+let rcSharedCounter = 0;
+let rcThreadData    = [];
+let rcRunning       = false;
+let rcFinished      = false;
+let rcResultText    = "";
+const RC_ITERATIONS = 30;
+let rcIntervals     = [];
+
+function rcStart() {
+  rcSharedCounter = 0;
+  rcRunning       = true;
+  rcFinished      = false;
+  rcResultText    = "";
+  rcIntervals     = [];
+  rcThreadData    = [
+    { id: 0, progress: 0, counterSeen: 0, done: false, active: false },
+    { id: 1, progress: 0, counterSeen: 0, done: false, active: false },
+  ];
+
+  function runWorker(tid, delay) {
+    setTimeout(() => {
+      let i = 0;
+      function step() {
+        if (i >= RC_ITERATIONS || rcThreadData.length === 0) return;
+        rcThreadData[tid].active = true;
+        let temp = rcSharedCounter;
+        setTimeout(() => {
+          if (rcThreadData.length === 0) return;
+          temp += 1;
+          rcSharedCounter = temp;
+          rcThreadData[tid].progress    = i + 1;
+          rcThreadData[tid].counterSeen = temp;
+          i++;
+          setTimeout(step, Math.random() * 30 + 20);
+        }, Math.random() * 40 + 30);
+      }
+      step();
+
+      let checkDone = setInterval(() => {
+        if (rcThreadData.length === 0) { clearInterval(checkDone); return; }
+        if (rcThreadData[tid].progress >= RC_ITERATIONS) {
+          rcThreadData[tid].done   = true;
+          rcThreadData[tid].active = false;
+          clearInterval(checkDone);
+          if (rcThreadData.every(t => t.done)) {
+            let expected   = RC_ITERATIONS * 2;
+            let lost       = expected - rcSharedCounter;
+            rcResultText   = "Esperados: " + expected + "   Registrados: " + rcSharedCounter + "   Perdidos: " + lost;
+            rcFinished     = true;
+          }
+        }
+      }, 100);
+      rcIntervals.push(checkDone);
+    }, delay);
+  }
+
+  runWorker(0, 0);
+  runWorker(1, 60);
+}
+
+function rcReset() {
+  rcIntervals.forEach(id => clearInterval(id));
+  rcIntervals     = [];
+  rcSharedCounter = 0;
+  rcRunning       = false;
+  rcFinished      = false;
+  rcResultText    = "";
+  rcThreadData    = [];
+}
+
+// ================================================================
+// MODO 2: SEMAFORO
+// ================================================================
+const SEM_MAX_SLOTS = 2;
+const SEM_NUM       = 5;
+let semThreadData   = [];
+let semRunning      = false;
+let semFinished     = false;
+let semOccupied     = 0;
+let semQueue        = [];
+let semIntervals    = [];
+
+function semTryEnter(tid, cb) {
+  function attempt() {
+    if (semThreadData.length === 0) return;
+    if (semOccupied < SEM_MAX_SLOTS) {
+      semOccupied++;
+      semThreadData[tid].state  = "COMIENDO";
+      semThreadData[tid].inside = true;
+      cb();
+    } else {
+      semThreadData[tid].state = "EN FILA";
+      setTimeout(attempt, 200);
+    }
+  }
+  attempt();
+}
+
+function semRelease(tid) {
+  semOccupied = Math.max(0, semOccupied - 1);
+  if (semThreadData.length > 0) {
+    semThreadData[tid].state  = "SE FUE";
+    semThreadData[tid].inside = false;
+    semThreadData[tid].done   = true;
+  }
+  if (semThreadData.length > 0 && semThreadData.every(t => t.done)) {
+    semFinished = true;
+  }
+}
+
+function semStart() {
+  semOccupied  = 0;
+  semRunning   = true;
+  semFinished  = false;
+  semIntervals = [];
+  semThreadData = Array.from({ length: SEM_NUM }, (_, i) => ({
+    id: i, state: "EN ESPERA", inside: false, done: false, progress: 0
+  }));
+
+  semThreadData.forEach((_, i) => {
+    setTimeout(() => {
+      if (semThreadData.length === 0) return;
+      semThreadData[i].state = "EN FILA";
+      semTryEnter(i, () => {
+        let steps = 0;
+        let total = Math.floor(Math.random() * 40 + 30);
+        let iv = setInterval(() => {
+          if (semThreadData.length === 0) { clearInterval(iv); return; }
+          steps++;
+          semThreadData[i].progress = Math.floor(100 * steps / 20);
+          if (steps >= 20) {
+            clearInterval(iv);
+            semRelease(i);
+          }
+        }, total);
+        semIntervals.push(iv);
+      });
+    }, i * 100);
+  });
+}
+
+function semReset() {
+  semIntervals.forEach(id => clearInterval(id));
+  semIntervals  = [];
+  semOccupied   = 0;
+  semRunning    = false;
+  semFinished   = false;
+  semThreadData = [];
+}
+
+// ================================================================
+// MODO 3: MUTEX
+// ================================================================
+let mutexLocked     = false;
+let mutexQueue      = [];
+let mutexThreadData = [];
+let mutexRunning    = false;
+let mutexFinished   = false;
+let mutexIntervals  = [];
+const MUTEX_NUM     = 4;
+const MUTEX_DISHES  = ["preparando sopa...", "cortando verduras...", "cocinando carne...", "emplatando..."];
+
+function mutexAcquire(tid, cb) {
+  function attempt() {
+    if (mutexThreadData.length === 0) return;
+    if (!mutexLocked) {
+      mutexLocked = true;
+      mutexThreadData[tid].state  = "EN LA COCINA";
+      mutexThreadData[tid].inside = true;
+      cb();
+    } else {
+      mutexThreadData[tid].state = "ESPERANDO COCINA";
+      setTimeout(attempt, 150);
+    }
+  }
+  attempt();
+}
+
+function mutexRelease(tid) {
+  mutexLocked = false;
+  if (mutexThreadData.length === 0) return;
+  mutexThreadData[tid].state  = "PLATO LISTO";
+  mutexThreadData[tid].inside = false;
+  mutexThreadData[tid].done   = true;
+  if (mutexThreadData.every(t => t.done)) mutexFinished = true;
+}
+
+function mutexStart() {
+  mutexLocked     = false;
+  mutexRunning    = true;
+  mutexFinished   = false;
+  mutexIntervals  = [];
+  mutexThreadData = Array.from({ length: MUTEX_NUM }, (_, i) => ({
+    id: i, state: "EN ESPERA", inside: false, done: false, progress: 0,
+    dish: MUTEX_DISHES[0]
+  }));
+
+  mutexThreadData.forEach((_, i) => {
+    setTimeout(() => {
+      if (mutexThreadData.length === 0) return;
+      mutexThreadData[i].state = "ESPERANDO COCINA";
+      mutexAcquire(i, () => {
+        let steps = 0;
+        let iv = setInterval(() => {
+          if (mutexThreadData.length === 0) { clearInterval(iv); return; }
+          steps++;
+          mutexThreadData[i].progress = Math.floor(100 * steps / 20);
+          if (steps % 5 === 0)
+            mutexThreadData[i].dish = MUTEX_DISHES[Math.floor(Math.random() * MUTEX_DISHES.length)];
+          if (steps >= 20) { clearInterval(iv); mutexRelease(i); }
+        }, Math.floor(Math.random() * 100 + 80));
+        mutexIntervals.push(iv);
+      });
+    }, i * 120);
+  });
+}
+
+function mutexReset() {
+  mutexIntervals.forEach(id => clearInterval(id));
+  mutexIntervals  = [];
+  mutexLocked     = false;
+  mutexRunning    = false;
+  mutexFinished   = false;
+  mutexThreadData = [];
+}
+
+// ================================================================
+// MODO 4: DEADLOCK
+// ================================================================
+let dlThreadData  = [];
+let dlRunning     = false;
+let dlFinished    = false;
+let dlTenedor     = false;
+let dlCuchillo    = false;
+
+function dlStart() {
+  dlTenedor   = false;
+  dlCuchillo  = false;
+  dlRunning   = true;
+  dlFinished  = false;
+  dlThreadData = [
+    { id: 0, state: "EN ESPERA", has: "", wants: "", blocked: false, done: false },
+    { id: 1, state: "EN ESPERA", has: "", wants: "", blocked: false, done: false },
+  ];
+
+  // Mesero 1: agarra tenedor primero
+  setTimeout(() => {
+    if (dlThreadData.length < 2) return;
+    dlThreadData[0].state = "ESPERANDO TENEDOR";
+    dlThreadData[0].wants = "tenedor";
+    function tryTenedor() {
+      if (dlThreadData.length < 2) return;
+      if (!dlTenedor) {
+        dlTenedor = true;
+        dlThreadData[0].state   = "TIENE TENEDOR, ESPERA CUCHILLO";
+        dlThreadData[0].has     = "tenedor";
+        dlThreadData[0].wants   = "cuchillo";
+        dlThreadData[0].blocked = true;
+        setTimeout(() => {
+          function tryCuchillo() {
+            if (dlThreadData.length < 2) return;
+            if (!dlCuchillo) {
+              dlCuchillo = true;
+              dlThreadData[0].state   = "SIRVIENDO PLATO";
+              dlThreadData[0].blocked = false;
+              dlThreadData[0].done    = true;
+              dlCuchillo = false; dlTenedor = false;
+            } else { setTimeout(tryCuchillo, 200); }
+          }
+          tryCuchillo();
+        }, 500);
+      } else { setTimeout(tryTenedor, 200); }
+    }
+    tryTenedor();
+  }, 0);
+
+  // Mesero 2: agarra cuchillo primero (orden inverso = deadlock)
+  setTimeout(() => {
+    if (dlThreadData.length < 2) return;
+    dlThreadData[1].state = "ESPERANDO CUCHILLO";
+    dlThreadData[1].wants = "cuchillo";
+    function tryCuchillo2() {
+      if (dlThreadData.length < 2) return;
+      if (!dlCuchillo) {
+        dlCuchillo = true;
+        dlThreadData[1].state   = "TIENE CUCHILLO, ESPERA TENEDOR";
+        dlThreadData[1].has     = "cuchillo";
+        dlThreadData[1].wants   = "tenedor";
+        dlThreadData[1].blocked = true;
+        setTimeout(() => {
+          function tryTenedor2() {
+            if (dlThreadData.length < 2) return;
+            if (!dlTenedor) {
+              dlTenedor = true;
+              dlThreadData[1].state   = "SIRVIENDO PLATO";
+              dlThreadData[1].blocked = false;
+              dlThreadData[1].done    = true;
+              dlTenedor = false; dlCuchillo = false;
+            } else { setTimeout(tryTenedor2, 200); }
+          }
+          tryTenedor2();
+        }, 500);
+      } else { setTimeout(tryCuchillo2, 200); }
+    }
+    tryCuchillo2();
+  }, 120);
+}
+
+function dlReset() {
+  dlTenedor   = false;
+  dlCuchillo  = false;
+  dlRunning   = false;
+  dlFinished  = false;
+  dlThreadData = [];
+}
+
+// ================================================================
+// MODO 5: MONITOR
+// ================================================================
+let monThreadData = [];
+let monRunning    = false;
+let monFinished   = false;
+let monOccupied   = 0;
+let monCapacidad  = 2;
+let monHistorial  = [];
+let monIntervals  = [];
+const MON_NUM     = 5;
+
+function monEnter(tid, cb) {
+  function attempt() {
+    if (monThreadData.length === 0) return;
+    if (monOccupied < monCapacidad) {
+      monOccupied++;
+      monHistorial.push("M" + (tid+1) + " entro (ocupado=" + monOccupied + ")");
+      if (monHistorial.length > 8) monHistorial.shift();
+      cb();
+    } else {
+      setTimeout(attempt, 200);
+    }
+  }
+  attempt();
+}
+
+function monExit(tid) {
+  monOccupied = Math.max(0, monOccupied - 1);
+  monHistorial.push("M" + (tid+1) + " salio  (ocupado=" + monOccupied + ")");
+  if (monHistorial.length > 8) monHistorial.shift();
+  if (monThreadData.length === 0) return;
+  monThreadData[tid].state  = "LISTO";
+  monThreadData[tid].inside = false;
+  monThreadData[tid].done   = true;
+  if (monThreadData.every(t => t.done)) monFinished = true;
+}
+
+function monStart() {
+  monOccupied  = 0;
+  monHistorial = [];
+  monRunning   = true;
+  monFinished  = false;
+  monIntervals = [];
+  monThreadData = Array.from({ length: MON_NUM }, (_, i) => ({
+    id: i, state: "EN ESPERA", inside: false, done: false, progress: 0
+  }));
+
+  monThreadData.forEach((_, i) => {
+    setTimeout(() => {
+      if (monThreadData.length === 0) return;
+      monThreadData[i].state = "PIDIENDO PERMISO";
+      monEnter(i, () => {
+        if (monThreadData.length === 0) return;
+        monThreadData[i].state  = "COCINANDO";
+        monThreadData[i].inside = true;
+        let steps = 0;
+        let iv = setInterval(() => {
+          if (monThreadData.length === 0) { clearInterval(iv); return; }
+          steps++;
+          monThreadData[i].progress = Math.floor(100 * steps / 20);
+          if (steps >= 20) { clearInterval(iv); monExit(i); }
+        }, Math.floor(Math.random() * 100 + 80));
+        monIntervals.push(iv);
+      });
+    }, i * 100);
+  });
+}
+
+function monReset() {
+  monIntervals.forEach(id => clearInterval(id));
+  monIntervals  = [];
+  monOccupied   = 0;
+  monHistorial  = [];
+  monRunning    = false;
+  monFinished   = false;
+  monThreadData = [];
+}
+
+// ================================================================
+// MODO 6: RECURSOS COMPARTIDOS
+// ================================================================
+const REC_NAMES  = ["Caja", "Bodega", "Impresora"];
+const REC_COLORS = [[255, 200, 50], [80, 220, 120], [180, 120, 255]];
+const REC_NUM    = 6;
+let recThreadData   = [];
+let recResourceData = [];
+let recRunning      = false;
+let recFinished     = false;
+let recLocked       = [false, false, false];
+let recIntervals    = [];
+
+function recAcquire(tid, rid, cb) {
+  function attempt() {
+    if (recThreadData.length === 0) return;
+    if (!recLocked[rid]) {
+      recLocked[rid] = true;
+      recThreadData[tid].state       = "USANDO " + REC_NAMES[rid];
+      recThreadData[tid].waitingFor  = -1;
+      recThreadData[tid].using       = rid;
+      if (recResourceData.length > rid) {
+        recResourceData[rid].user = tid;
+        recResourceData[rid].busy = true;
+      }
+      cb();
+    } else {
+      recThreadData[tid].state      = "ESPERANDO " + REC_NAMES[rid];
+      recThreadData[tid].waitingFor = rid;
+      setTimeout(attempt, 200);
+    }
+  }
+  attempt();
+}
+
+function recRelease(tid, rid) {
+  recLocked[rid] = false;
+  if (recResourceData.length > rid) {
+    recResourceData[rid].user = -1;
+    recResourceData[rid].busy = false;
+  }
+  if (recThreadData.length > tid) {
+    recThreadData[tid].using    = -1;
+    recThreadData[tid].progress = 0;
+  }
+}
+
+function recStart() {
+  recLocked       = [false, false, false];
+  recRunning      = true;
+  recFinished     = false;
+  recIntervals    = [];
+  recResourceData = [0, 1, 2].map(i => ({ id: i, busy: false, user: -1 }));
+  recThreadData   = Array.from({ length: REC_NUM }, (_, i) => ({
+    id: i, state: "EN ESPERA", done: false, progress: 0,
+    recursos: [], using: -1, waitingFor: -1
+  }));
+
+  recThreadData.forEach((_, i) => {
+    setTimeout(() => {
+      if (recThreadData.length === 0) return;
+      let pool = [0, 1, 2];
+      let shuffled = pool.sort(() => Math.random() - 0.5);
+      let toUse = shuffled.slice(0, Math.floor(Math.random() * 2) + 1);
+      recThreadData[i].recursos = toUse;
+      recThreadData[i].state    = "LISTO PARA TRABAJAR";
+
+      function useNext(idx) {
+        if (recThreadData.length === 0) return;
+        if (idx >= toUse.length) {
+          recThreadData[i].state = "TERMINO TURNO";
+          recThreadData[i].done  = true;
+          if (recThreadData.every(t => t.done)) recFinished = true;
+          return;
+        }
+        let rid = toUse[idx];
+        recAcquire(i, rid, () => {
+          let steps = 0;
+          let iv = setInterval(() => {
+            if (recThreadData.length === 0) { clearInterval(iv); return; }
+            steps++;
+            recThreadData[i].progress = Math.floor(100 * steps / 15);
+            if (steps >= 15) {
+              clearInterval(iv);
+              recRelease(i, rid);
+              useNext(idx + 1);
+            }
+          }, Math.floor(Math.random() * 80 + 60));
+          recIntervals.push(iv);
+        });
+      }
+      useNext(0);
+    }, i * 120);
+  });
+}
+
+function recReset() {
+  recIntervals.forEach(id => clearInterval(id));
+  recIntervals    = [];
+  recLocked       = [false, false, false];
+  recRunning      = false;
+  recFinished     = false;
+  recThreadData   = [];
+  recResourceData = [];
+}
+
+// ================================================================
+// RESET ALL
+// ================================================================
+function resetAll() {
+  rcReset(); semReset(); mutexReset();
+  dlReset(); monReset(); recReset();
+}
+
+// ================================================================
+// P5.JS SETUP / DRAW
+// ================================================================
+function setup() {
+  createCanvas(760, 580);
+  textFont('monospace');
+  frameRate(30);
+}
+
+function draw() {
+  pulseTimer++;
+  background(30, 18, 10);
+
+  if      (currentMode === 0) drawMenu();
+  else if (currentMode === 1) drawRc();
+  else if (currentMode === 2) drawSem();
+  else if (currentMode === 3) drawMutex();
+  else if (currentMode === 4) drawDl();
+  else if (currentMode === 5) drawMonitor();
+  else if (currentMode === 6) drawRec();
+
+  drawTopbar();
+}
+
+// ================================================================
+// TOPBAR
+// ================================================================
+function drawTopbar() {
+  if (currentMode === 0) return;
+  fill(20, 12, 5, 200); noStroke(); rect(0, 0, width, 22);
+  fill(160, 130, 80); textSize(10); textAlign(LEFT, TOP); noStroke();
+  text("  [1] Carrera  [2] Semaforo  [3] Mutex  [4] Deadlock  [5] Monitor  [6] Recursos  |  [ESPACIO] Iniciar  [R] Reiniciar  [0] Menu", 0, 6);
+}
+
+// ================================================================
+// MENU
+// ================================================================
+function drawMenu() {
+  fill(255, 220, 50); textSize(22); textAlign(CENTER, TOP); noStroke();
+  text("SIMULADOR DE CONCURRENCIA", width / 2, 55);
+  fill(200, 170, 130); textSize(13); textAlign(CENTER, TOP);
+  text("Analogia: Restaurante", width / 2, 85);
+
+  stroke(120, 90, 40); strokeWeight(1);
+  line(100, 108, width - 100, 108);
+
+  const descriptions = [
+    "Dos meseros anotan pedidos sin coordinacion. Se pierden registros.",
+    "El restaurante tiene N mesas. Clientes esperan en fila si esta lleno.",
+    "Solo UN mesero puede entrar a la cocina. Los demas esperan afuera.",
+    "Dos meseros se bloquean mutuamente esperando el utensilio del otro.",
+    "El jefe de cocina coordina el acceso con condiciones de espera.",
+    "Varios meseros usan caja, bodega e impresora de forma concurrente.",
+  ];
+
+  for (let i = 0; i < 6; i++) {
+    let by = 120 + i * 68;
+    let c  = THREAD_COLORS[i % THREAD_COLORS.length];
+    fill(40, 25, 10); noStroke(); rect(80, by, width - 160, 55, 8);
+    stroke(c[0], c[1], c[2]); strokeWeight(1.5); noFill();
+    rect(80, by, width - 160, 55, 8);
+    fill(c[0], c[1], c[2]); noStroke(); textSize(13); textAlign(LEFT, TOP);
+    text("[" + (i+1) + "]  " + MODE_NAMES[i+1], 100, by + 8);
+    fill(180, 155, 115); textSize(10); textAlign(LEFT, TOP);
+    text(descriptions[i], 100, by + 30);
+  }
+
+  fill(140, 120, 80); textSize(11); textAlign(CENTER, TOP); noStroke();
+  text("Presiona una tecla del 1 al 6 para elegir un modo", width / 2, 538);
+}
+
+// ================================================================
+// MODO 1: CONDICION DE CARRERA
+// ================================================================
+function drawRc() {
+  drawTitle("CONDICION DE CARRERA - Restaurante",
+            "Dos meseros anotan pedidos en el mismo cuaderno SIN coordinacion");
+
+  // Cuaderno
+  fill(0, 0, 0, 80); noStroke(); rect(308, 73, 130, 90, 6);
+  fill(245, 235, 200); stroke(180, 140, 80); strokeWeight(2);
+  rect(303, 68, 130, 90, 6);
+  stroke(150, 120, 60); strokeWeight(1.5);
+  for (let i = 0; i < 6; i++) ellipse(303, 82 + i * 14, 10, 10);
+  fill(80, 50, 20); noStroke(); textSize(10); textAlign(CENTER, TOP);
+  text("CUADERNO DE PEDIDOS", 368, 72);
+  stroke(180, 160, 120, 120); strokeWeight(1);
+  for (let i = 0; i < 3; i++) line(318, 100 + i * 14, 423, 100 + i * 14);
+  fill(180, 60, 40); noStroke(); textSize(11); textAlign(CENTER, TOP);
+  text("Total pedidos:", 368, 104);
+  fill(180, 60, 40); textSize(28); textAlign(CENTER, TOP);
+  text(str(rcSharedCounter), 368, 120);
+
+  // Mesa
+  fill(120, 80, 40); noStroke(); rect(270, 175, 200, 12, 4);
+  fill(80, 50, 25); rect(340, 187, 12, 30, 2); rect(380, 187, 12, 30, 2);
+
+  let yPos = [290, 400];
+  for (let td of rcThreadData) {
+    let tid    = td.id, prog = td.progress;
+    let c      = THREAD_COLORS[tid];
+    let yBase  = yPos[tid];
+    let done   = td.done, active = td.active;
+
+    fill(50, 30, 15); noStroke(); rect(50, yBase - 12, 200, 16, 4);
+    fill(c[0], c[1], c[2]);
+    let bw = Math.floor(200 * prog / RC_ITERATIONS);
+    if (bw > 0) rect(50, yBase - 12, bw, 16, 4);
+
+    fill(230, 200, 150); textSize(12); textAlign(LEFT, TOP); noStroke();
+    text("Mesero " + (tid + 1), 50, yBase - 28);
+
+    let ratio = prog / RC_ITERATIONS;
+    let cx = Math.floor(55 + ratio * 200), cy = yBase - 4;
+    if (done) { fill(c[0], c[1], c[2], 100); stroke(200, 200, 200, 80); }
+    else       { fill(c[0], c[1], c[2]);      stroke(255, 255, 255); }
+    strokeWeight(1.5); ellipse(cx, cy, 32, 32);
+    fill(done ? color(180) : color(255)); noStroke();
+    textSize(11); textAlign(CENTER, CENTER); text("M" + (tid+1), cx, cy);
+
+    textSize(10); textAlign(LEFT, TOP); noStroke();
+    if (done)        { fill(100, 220, 100); text("TURNO TERMINADO", 390, yBase - 16); }
+    else if (active) { fill(255, 200, 50);  text("ANOTANDO PEDIDO", 390, yBase - 16); }
+    else             { fill(160, 140, 110); text("EN ESPERA",       390, yBase - 16); }
+
+    if (active || done) {
+      fill(180, 160, 120); textSize(10); textAlign(LEFT, TOP);
+      text("Anoto pedido #" + td.counterSeen, 390, yBase);
+    }
+    fill(140, 120, 90); textSize(10); textAlign(LEFT, TOP);
+    text(prog + "/" + RC_ITERATIONS, 260, yBase);
+    stroke(c[0], c[1], c[2], 150); strokeWeight(1.2);
+    line(cx + 16, cy - 8, 358, 155);
+  }
+
+  if (rcFinished && rcResultText !== "") {
+    fill(200, 60, 50, 230); noStroke(); rect(40, 455, 680, 60, 8);
+    fill(255); textSize(12); textAlign(CENTER, TOP);
+    text(rcResultText, width / 2, 465);
+    fill(255, 220, 80); textSize(10); textAlign(CENTER, TOP);
+    text("Pedidos perdidos = condicion de carrera", width / 2, 490);
+  }
+
+  drawBottomHint(rcRunning, "El cuaderno deberia tener " + (RC_ITERATIONS * 2) + " pedidos. Si hay menos, hubo condicion de carrera.");
+}
+
+// ================================================================
+// MODO 2: SEMAFORO
+// ================================================================
+const SZX = 255, SZY = 100, SZW = 240, SZH = 260;
+
+function drawSem() {
+  drawTitle("SEMAFORO - Restaurante",
+            "Maximo " + SEM_MAX_SLOTS + " clientes pueden comer al mismo tiempo.");
+
+  let inside = semThreadData.filter(t => t.inside);
+  let free   = SEM_MAX_SLOTS - inside.length;
+
+  fill(0,0,0,80); noStroke(); rect(SZX+4, SZY+4, SZW, SZH, 10);
+  fill(60,35,15); stroke(180,130,60); strokeWeight(2); rect(SZX, SZY, SZW, SZH, 10);
+  fill(180,130,60); noStroke(); rect(SZX+30, SZY-18, SZW-60, 26, 4);
+  fill(30,15,5); textSize(12); textAlign(CENTER, TOP);
+  text("RESTAURANTE", SZX + SZW/2, SZY - 14);
+
+  let sw = 88, sh = 88, sp = 14;
+  let tw = SEM_MAX_SLOTS * sw + (SEM_MAX_SLOTS-1) * sp;
+  let sx0 = Math.floor(SZX + (SZW - tw) / 2);
+  for (let s = 0; s < SEM_MAX_SLOTS; s++) {
+    let sx = sx0 + s*(sw+sp), sy = SZY + 28;
+    let cnt = 0, occ = null;
+    for (let t of semThreadData) {
+      if (t.inside) { if (cnt === s) { occ = t; } cnt++; }
+    }
+    if (occ) {
+      let c = THREAD_COLORS[occ.id];
+      fill(c[0],c[1],c[2],60); stroke(c[0],c[1],c[2]); strokeWeight(2); rect(sx,sy,sw,sh,8);
+      fill(120,80,40); noStroke(); ellipse(sx+sw/2,sy+36,46,22); rect(sx+sw/2-4,sy+46,8,18,2);
+      fill(c[0],c[1],c[2]); stroke(255,255,255); strokeWeight(1.5); ellipse(sx+sw/2,sy+20,30,30);
+      fill(255); noStroke(); textSize(9); textAlign(CENTER,CENTER); text("C"+(occ.id+1), sx+sw/2, sy+20);
+      fill(40,25,10); noStroke(); rect(sx+6,sy+66,sw-12,10,3);
+      let pw = Math.floor((sw-12)*occ.progress/100);
+      if (pw>0) { fill(c[0],c[1],c[2]); rect(sx+6,sy+66,pw,10,3); }
+      fill(230,200,150); textSize(8); textAlign(CENTER,TOP); text(occ.progress+"%", sx+sw/2, sy+76);
+    } else {
+      fill(45,28,12); stroke(140,100,50,120); strokeWeight(1); rect(sx,sy,sw,sh,8);
+      fill(120,80,40); noStroke(); ellipse(sx+sw/2,sy+36,46,22); rect(sx+sw/2-4,sy+46,8,18,2);
+      fill(140,100,60,150); textSize(10); textAlign(CENTER,CENTER); text("MESA LIBRE", sx+sw/2, sy+sh/2+10);
+    }
+  }
+
+  fill(30,20,8); noStroke(); rect(SZX+20,SZY+130,SZW-40,50,8);
+  fill(200,170,100); textSize(10); textAlign(CENTER,TOP);
+  text("Mesas disponibles", SZX+SZW/2, SZY+134);
+  fill(free > 0 ? color(80,220,100) : color(255,70,70));
+  textSize(24); textAlign(CENTER,TOP); text(free+" / "+SEM_MAX_SLOTS, SZX+SZW/2, SZY+148);
+
+  let lx = Math.floor(SZX+SZW/2), ly = SZY+220;
+  stroke(150,120,60); strokeWeight(3); line(lx,ly-16,lx,ly+16);
+  fill(free>0 ? color(60,220,80) : color(220,60,60));
+  stroke(free>0 ? color(60,220,80) : color(220,60,60));
+  strokeWeight(2); ellipse(lx,ly,30,30);
+  fill(255); noStroke(); textSize(8); textAlign(CENTER,CENTER);
+  text(free>0 ? "PASA":"LLENO", lx, ly+20);
+
+  fill(100,65,25); noStroke();
+  rect(SZX+SZW/2-16, SZY+SZH-34, 32, 34, 4);
+  fill(180,140,60); ellipse(SZX+SZW/2+8, SZY+SZH-18, 6, 6);
+
+  fill(180,140,80); noStroke(); textSize(11); textAlign(CENTER,TOP);
+  text("FILA", 105, SZY+10);
+  stroke(150,120,60); strokeWeight(1);
+  line(55,SZY+28,55,SZY+235); line(55,SZY+28,175,SZY+28); line(175,SZY+28,175,SZY+235);
+
+  let waiting = semThreadData.filter(t => t.state === "EN FILA");
+  waiting.forEach((t, idx) => {
+    let c = THREAD_COLORS[t.id];
+    let wx = 115, wy = SZY+52+idx*46;
+    fill(0,0,0,50); noStroke(); ellipse(wx+2,wy+2,34,34);
+    fill(c[0],c[1],c[2]); stroke(255,255,255); strokeWeight(1.5); ellipse(wx,wy,34,34);
+    fill(255); noStroke(); textSize(9); textAlign(CENTER,CENTER); text("C"+(t.id+1),wx,wy);
+    stroke(c[0],c[1],c[2],150); strokeWeight(1.2); line(wx+17,wy,SZX-3,SZY+SZH/2);
+  });
+
+  fill(180,140,80); noStroke(); textSize(11); textAlign(LEFT,TOP);
+  text("CLIENTES", 535, SZY+10);
+  semThreadData.forEach(t => {
+    let c = THREAD_COLORS[t.id], ty = SZY+35+t.id*46;
+    fill(c[0],c[1],c[2], t.done?100:255); noStroke(); ellipse(548,ty,26,26);
+    fill(t.done ? color(160):color(255)); textSize(9); textAlign(CENTER,CENTER); text("C"+(t.id+1),548,ty);
+    if      (t.state==="SE FUE")   fill(100,220,100);
+    else if (t.state==="COMIENDO") fill(255,200,50);
+    else if (t.state==="EN FILA")  fill(200,140,60);
+    else                           fill(160,140,110);
+    textSize(9); textAlign(LEFT,TOP); noStroke(); text(t.state, 563, ty-6);
+  });
+
+  if (semFinished) {
+    fill(30,60,30,220); noStroke(); rect(40,390,680,45,10);
+    fill(80,220,120); textSize(12); textAlign(CENTER,TOP);
+    text("Todos atendidos. El semaforo controlo el acceso correctamente.", width/2, 400);
+  }
+  drawBottomHint(semRunning, "Semaforo = capacidad del restaurante. Nunca mas de " + SEM_MAX_SLOTS + " al mismo tiempo.");
+}
+
+// ================================================================
+// MODO 3: MUTEX
+// ================================================================
+const KX=265, KY=90, KW=230, KH=230;
+
+function drawMutex() {
+  drawTitle("MUTEX + SECCION CRITICA - Restaurante",
+            "Solo UN mesero puede estar en la cocina a la vez.");
+
+  if (mutexThreadData.length === 0) {
+    fill(160,140,110); textSize(13); textAlign(CENTER,TOP);
+    text("Presiona [ESPACIO] para iniciar", width/2, 280);
+    drawBottomHint(false, "Mutex = candado. Seccion critica = cocina. Solo 1 mesero adentro.");
+    return;
+  }
+
+  let current   = mutexThreadData.find(t => t.inside) || null;
+  let mFree     = current === null;
+
+  fill(0,0,0,80); noStroke(); rect(KX+5,KY+5,KW,KH,10);
+  if (!mFree) { let c=THREAD_COLORS[current.id]; stroke(c[0],c[1],c[2]); }
+  else stroke(140,100,50);
+  strokeWeight(2); fill(45,28,12); rect(KX,KY,KW,KH,10);
+  fill(140,100,50); noStroke(); rect(KX+25,KY-20,KW-50,28,4);
+  fill(30,15,5); textSize(11); textAlign(CENTER,TOP);
+  text("COCINA (Seccion Critica)", KX+KW/2, KY-16);
+
+  // Decoracion
+  fill(60,40,20); noStroke(); rect(KX+14,KY+155,55,40,4);
+  stroke(180,100,40); strokeWeight(1.5); noFill();
+  ellipse(KX+29,KY+167,18,18); ellipse(KX+51,KY+167,18,18);
+  ellipse(KX+29,KY+184,18,18); ellipse(KX+51,KY+184,18,18);
+  fill(80,55,25); noStroke(); rect(KX+78,KY+158,122,14,3);
+  fill(100,80,40); noStroke();
+  ellipse(KX+104,KY+155,22,16); ellipse(KX+139,KY+155,22,16); ellipse(KX+174,KY+155,22,16);
+
+  if (current) {
+    let c = THREAD_COLORS[current.id];
+    let kx2 = Math.floor(KX+KW/2), ky2 = KY+75;
+    fill(c[0],c[1],c[2],40); noStroke(); ellipse(kx2,ky2,80,80);
+    fill(c[0],c[1],c[2]); stroke(255,255,255); strokeWeight(2); ellipse(kx2,ky2,48,48);
+    fill(255); noStroke(); textSize(13); textAlign(CENTER,CENTER); text("M"+(current.id+1),kx2,ky2);
+    fill(230,200,150); textSize(10); textAlign(CENTER,TOP); noStroke();
+    text("Mesero "+(current.id+1), kx2, ky2+22);
+    fill(40,25,10); noStroke(); rect(KX+20,KY+112,KW-40,13,4);
+    let pw = Math.floor((KW-40)*current.progress/100);
+    if (pw>0) { fill(c[0],c[1],c[2]); rect(KX+20,KY+112,pw,13,4); }
+    fill(255); textSize(9); textAlign(CENTER,TOP); text(current.progress+"%", KX+KW/2, KY+114);
+    fill(200,170,110); textSize(9); textAlign(CENTER,TOP); text(current.dish, KX+KW/2, KY+128);
+  } else {
+    fill(100,75,40); textSize(12); textAlign(CENTER,TOP); noStroke();
+    text("COCINA LIBRE", KX+KW/2, KY+75);
+  }
+
+  // Candado
+  let lx2 = Math.floor(KX+KW/2), ly2 = KY+KH-28;
+  let lc = mFree ? color(80,200,100) : (()=>{ let c=THREAD_COLORS[current.id]; return color(c[0],c[1],c[2]); })();
+  fill(lc); noStroke(); rect(lx2-13,ly2,26,20,4);
+  noFill(); stroke(lc); strokeWeight(3);
+  arc(lx2, mFree ? ly2-2 : ly2+1, 20, 20, PI, TWO_PI);
+  fill(255); noStroke(); textSize(8); textAlign(CENTER,CENTER); text("MUTEX",lx2,ly2+10);
+  fill(lc); textSize(9); textAlign(CENTER,TOP); text(mFree?"LIBRE":"OCUPADO", lx2, ly2+22);
+
+  fill(180,140,80); noStroke(); textSize(11); textAlign(CENTER,TOP);
+  text("FILA DE ESPERA", 108, KY+10);
+  stroke(150,120,60); strokeWeight(1); noFill(); rect(58,KY+28,100,195,4);
+
+  mutexThreadData.filter(t=>t.state==="ESPERANDO COCINA").forEach((t,idx) => {
+    let c=THREAD_COLORS[t.id], wx=108, wy=KY+54+idx*50;
+    fill(0,0,0,50); noStroke(); ellipse(wx+2,wy+2,34,34);
+    fill(c[0],c[1],c[2]); stroke(255,255,255); strokeWeight(1.5); ellipse(wx,wy,34,34);
+    fill(255); noStroke(); textSize(11); textAlign(CENTER,CENTER); text("M"+(t.id+1),wx,wy);
+    stroke(c[0],c[1],c[2],130); strokeWeight(1.2); line(wx+17,wy,KX-2,KY+KH/2);
+  });
+
+  fill(180,140,80); noStroke(); textSize(11); textAlign(LEFT,TOP);
+  text("MESEROS", 548, KY+10);
+  mutexThreadData.forEach(t => {
+    let c=THREAD_COLORS[t.id], ty=KY+36+t.id*50;
+    fill(c[0],c[1],c[2],t.done?100:255); noStroke(); ellipse(558,ty,26,26);
+    fill(t.done?color(160):color(255)); textSize(10); textAlign(CENTER,CENTER); text("M"+(t.id+1),558,ty);
+    if      (t.state==="PLATO LISTO")      fill(100,220,100);
+    else if (t.state==="EN LA COCINA")     fill(255,200,50);
+    else if (t.state==="ESPERANDO COCINA") fill(200,120,60);
+    else                                   fill(160,140,110);
+    textSize(9); textAlign(LEFT,TOP); noStroke(); text(t.state, 573, ty-6);
+  });
+
+  if (mutexFinished) {
+    fill(30,60,30,220); noStroke(); rect(40,385,680,45,10);
+    fill(80,220,120); textSize(12); textAlign(CENTER,TOP);
+    text("Todos cocinaron. El mutex garantizo exclusion mutua.", width/2, 395);
+  }
+  drawBottomHint(mutexRunning, "Mutex = candado de la cocina. Seccion critica = cocina. Solo 1 mesero adentro.");
+}
+
+// ================================================================
+// MODO 4: DEADLOCK
+// ================================================================
+const DL_TX=230, DL_TY=210, DL_CX=530, DL_CY=210;
+const DL_M1X=120, DL_M1Y=340, DL_M2X=640, DL_M2Y=340;
+
+function drawDl() {
+  drawTitle("DEADLOCK - Restaurante",
+            "Cada mesero tiene un utensilio y espera el del otro. Ninguno suelta el suyo.");
+
+  if (dlThreadData.length < 2) {
+    fill(160,140,110); textSize(13); textAlign(CENTER,TOP);
+    text("Presiona [ESPACIO] para iniciar", width/2, 280);
+    drawBottomHint(false, "Deadlock = bloqueo circular. Solucion: mismo orden de adquisicion.");
+    return;
+  }
+
+  let td1 = dlThreadData[0], td2 = dlThreadData[1];
+  let bothBlocked = td1.blocked && td2.blocked;
+
+  if (bothBlocked) {
+    let p = abs(sin(pulseTimer * 0.08));
+    fill(180,30,30, Math.floor(40*p)); noStroke(); rect(0,0,width,height);
+  }
+
+  dlDrawResource(DL_TX, DL_TY, "TENEDOR",  td1, bothBlocked);
+  dlDrawResource(DL_CX, DL_CY, "CUCHILLO", td2, bothBlocked);
+  dlDrawMesero(td1, DL_M1X, DL_M1Y, THREAD_COLORS[0]);
+  dlDrawMesero(td2, DL_M2X, DL_M2Y, THREAD_COLORS[1]);
+
+  if (td1.has === "tenedor") {
+    let c=THREAD_COLORS[0]; stroke(c[0],c[1],c[2],200); strokeWeight(2);
+    line(DL_M1X+25,DL_M1Y-12,DL_TX-38,DL_TY+10);
+  }
+  if (td1.blocked) {
+    if (bothBlocked) { let p=abs(sin(pulseTimer*0.1)); stroke(255,Math.floor(50*p),Math.floor(50*p),200); }
+    else stroke(255,100,100,180);
+    strokeWeight(1.5); dlDashedLine(DL_M1X+25,DL_M1Y-12,DL_CX-38,DL_CY+10);
+  }
+  if (td2.has === "cuchillo") {
+    let c=THREAD_COLORS[1]; stroke(c[0],c[1],c[2],200); strokeWeight(2);
+    line(DL_M2X-25,DL_M2Y-12,DL_CX+38,DL_CY+10);
+  }
+  if (td2.blocked) {
+    if (bothBlocked) { let p=abs(sin(pulseTimer*0.1)); stroke(255,Math.floor(50*p),Math.floor(50*p),200); }
+    else stroke(255,100,100,180);
+    strokeWeight(1.5); dlDashedLine(DL_M2X-25,DL_M2Y-12,DL_TX+38,DL_TY+10);
+  }
+
+  if (bothBlocked) {
+    let p = abs(sin(pulseTimer*0.08));
+    let a = Math.floor(180+75*p);
+    fill(200,40,40,a); noStroke(); rect(190,420,380,60,10);
+    fill(255); textSize(20); textAlign(CENTER,TOP); text("!! DEADLOCK !!", width/2, 428);
+    fill(255,220,80); textSize(10); textAlign(CENTER,TOP);
+    text("Ninguno suelta su utensilio. Ambos esperan eternamente.", width/2, 456);
+  }
+
+  drawBottomHint(dlRunning, "Deadlock = bloqueo circular eterno. Solucion: mismo orden de adquisicion.");
+}
+
+function dlDrawResource(rx, ry, nombre, owner, bothBlocked) {
+  let hasIt = owner.has === nombre.toLowerCase();
+  let col;
+  if (bothBlocked) { let p=abs(sin(pulseTimer*0.08)); col=color(Math.floor(220+35*p),60,60); }
+  else if (hasIt)  { let c=THREAD_COLORS[owner.id]; col=color(c[0],c[1],c[2]); }
+  else             col=color(140,100,50);
+
+  stroke(col); strokeWeight(2); fill(40,25,10); rect(rx-42,ry-36,84,72,8);
+  fill(col); noStroke(); textSize(20); textAlign(CENTER,CENTER);
+  text(nombre==="TENEDOR"?"Y":"I", rx, ry);
+  fill(col); textSize(10); textAlign(CENTER,TOP); text(nombre, rx, ry+16);
+
+  if (hasIt) {
+    let c=THREAD_COLORS[owner.id];
+    fill(c[0],c[1],c[2]); noStroke(); rect(rx-28,ry+36,56,17,4);
+    fill(255); textSize(9); textAlign(CENTER,CENTER); text("M"+(owner.id+1)+" lo tiene", rx, ry+44);
+  } else {
+    fill(80,60,30); noStroke(); rect(rx-28,ry+36,56,17,4);
+    fill(160,130,80); textSize(9); textAlign(CENTER,CENTER); text("LIBRE", rx, ry+44);
+  }
+}
+
+function dlDrawMesero(td, mx, my, c) {
+  let blocked=td.blocked, done=td.done;
+  fill(0,0,0,60); noStroke(); ellipse(mx+3,my+3,52,52);
+  if (done)         { fill(c[0],c[1],c[2],120); stroke(200,200,200,100); }
+  else if (blocked) { fill(200,60,60);           stroke(255,100,100); }
+  else              { fill(c[0],c[1],c[2]);       stroke(255,255,255); }
+  strokeWeight(2); ellipse(mx,my,50,50);
+  fill(255); noStroke(); textSize(13); textAlign(CENTER,CENTER); text("M"+(td.id+1),mx,my);
+  fill(230,200,150); textSize(10); textAlign(CENTER,TOP); noStroke();
+  text("Mesero "+(td.id+1), mx, my+22);
+  let st = td.state;
+  fill((st.includes("ESPERA")||blocked) ? color(255,80,80) : (done ? color(100,220,100) : color(255,200,50)));
+  textSize(9); textAlign(CENTER,TOP); text(st, mx, my+36);
+  if (td.has !== "") {
+    fill(255,200,80); textSize(9); textAlign(CENTER,TOP);
+    text("Tiene: " + td.has.toUpperCase(), mx, my+50);
+  }
+  if (blocked) { fill(255,60,60); noStroke(); textSize(22); textAlign(CENTER,CENTER); text("X",mx,my-32); }
+}
+
+function dlDashedLine(x1,y1,x2,y2) {
+  for (let i=0; i<12; i++) {
+    if (i%2===0) {
+      let px1=x1+(x2-x1)*i/12, py1=y1+(y2-y1)*i/12;
+      let px2=x1+(x2-x1)*(i+1)/12, py2=y1+(y2-y1)*(i+1)/12;
+      line(px1,py1,px2,py2);
+    }
+  }
+}
+
+// ================================================================
+// MODO 5: MONITOR
+// ================================================================
+const MZX=250, MZY=85, MZW=260, MZH=230;
+
+function drawMonitor() {
+  drawTitle("MONITOR - Restaurante",
+            "El jefe de cocina coordina el acceso. Los meseros esperan su senal.");
+
+  let slotsFree = monCapacidad - monOccupied;
+
+  fill(0,0,0,80); noStroke(); rect(MZX+4,MZY+4,MZW,MZH,10);
+  stroke(200,160,80); strokeWeight(2); fill(50,30,12); rect(MZX,MZY,MZW,MZH,10);
+  fill(200,160,80); noStroke(); rect(MZX+20,MZY-20,MZW-40,28,4);
+  fill(30,15,5); textSize(11); textAlign(CENTER,TOP);
+  text("COCINA CON MONITOR (Jefe)", MZX+MZW/2, MZY-16);
+
+  let jx=Math.floor(MZX+MZW/2), jy=MZY+50;
+  fill(255,200,50,60); noStroke(); ellipse(jx,jy,90,90);
+  fill(255,200,50); stroke(255,255,255); strokeWeight(2); ellipse(jx,jy,46,46);
+  fill(30,15,5); noStroke(); textSize(11); textAlign(CENTER,CENTER); text("JEFE",jx,jy);
+  fill(230,200,150); textSize(9); textAlign(CENTER,TOP); noStroke(); text("Monitor",jx,jy+18);
+
+  fill(30,20,8); noStroke(); rect(MZX+15,MZY+90,MZW-30,45,6);
+  fill(200,170,100); textSize(10); textAlign(CENTER,TOP);
+  text("Capacidad disponible", MZX+MZW/2, MZY+94);
+  fill(slotsFree>0 ? color(80,220,100) : color(255,70,70));
+  textSize(22); textAlign(CENTER,TOP);
+  text(slotsFree+" / "+monCapacidad, MZX+MZW/2, MZY+108);
+
+  let inside = monThreadData.filter(t=>t.inside);
+  inside.forEach((t,idx) => {
+    let c=THREAD_COLORS[t.id];
+    let ix=Math.floor(MZX+55+idx*90), iy=MZY+185;
+    fill(c[0],c[1],c[2],50); noStroke(); ellipse(ix,iy,60,60);
+    fill(c[0],c[1],c[2]); stroke(255,255,255); strokeWeight(1.5); ellipse(ix,iy,36,36);
+    fill(255); noStroke(); textSize(10); textAlign(CENTER,CENTER); text("M"+(t.id+1),ix,iy);
+    fill(40,25,10); noStroke(); rect(ix-24,iy+22,48,8,3);
+    let pw=Math.floor(48*t.progress/100);
+    if (pw>0) { fill(c[0],c[1],c[2]); rect(ix-24,iy+22,pw,8,3); }
+  });
+  if (inside.length===0) {
+    fill(100,75,40); textSize(11); textAlign(CENTER,TOP); noStroke();
+    text("COCINA LIBRE", MZX+MZW/2, MZY+175);
+  }
+
+  // Log
+  fill(20,12,5); noStroke(); rect(MZX,MZY+MZH+10,MZW,110,6);
+  stroke(140,100,50); strokeWeight(1); noFill(); rect(MZX,MZY+MZH+10,MZW,110,6);
+  fill(180,140,80); noStroke(); textSize(10); textAlign(LEFT,TOP);
+  text("Log del Monitor:", MZX+8, MZY+MZH+14);
+  let last6 = monHistorial.slice(-6);
+  last6.forEach((entry,idx) => {
+    fill(entry.includes("entro") ? color(140,200,140) : color(200,140,140));
+    textSize(9); textAlign(LEFT,TOP);
+    text(entry, MZX+8, MZY+MZH+28+idx*13);
+  });
+
+  fill(180,140,80); noStroke(); textSize(11); textAlign(CENTER,TOP);
+  text("EN ESPERA", 105, MZY+10);
+  monThreadData.filter(t=>t.state==="PIDIENDO PERMISO").forEach((t,idx) => {
+    let c=THREAD_COLORS[t.id], wx=105, wy=MZY+46+idx*46;
+    fill(c[0],c[1],c[2]); stroke(255,255,255); strokeWeight(1.5); ellipse(wx,wy,32,32);
+    fill(255); noStroke(); textSize(10); textAlign(CENTER,CENTER); text("M"+(t.id+1),wx,wy);
+    stroke(c[0],c[1],c[2],140); strokeWeight(1.2); line(wx+16,wy,MZX-2,MZY+MZH/2);
+  });
+
+  fill(180,140,80); noStroke(); textSize(11); textAlign(LEFT,TOP);
+  text("MESEROS", 548, MZY+10);
+  monThreadData.forEach(t => {
+    let c=THREAD_COLORS[t.id], ty=MZY+35+t.id*46;
+    fill(c[0],c[1],c[2],t.done?100:255); noStroke(); ellipse(558,ty,26,26);
+    fill(t.done?color(160):color(255)); textSize(9); textAlign(CENTER,CENTER); text("M"+(t.id+1),558,ty);
+    if      (t.state==="LISTO")           fill(100,220,100);
+    else if (t.state==="COCINANDO")       fill(255,200,50);
+    else if (t.state==="PIDIENDO PERMISO") fill(200,140,60);
+    else                                  fill(160,140,110);
+    textSize(9); textAlign(LEFT,TOP); noStroke(); text(t.state, 573, ty-6);
+  });
+
+  if (monFinished) {
+    fill(30,60,30,220); noStroke(); rect(40,478,680,40,10);
+    fill(80,220,120); textSize(11); textAlign(CENTER,TOP);
+    text("Todos atendidos. El monitor coordino el acceso con condiciones de espera.", width/2, 488);
+  }
+  drawBottomHint(monRunning, "Monitor = jefe que coordina. Usa condition.wait() y notify() internamente.");
+}
+
+// ================================================================
+// MODO 6: RECURSOS COMPARTIDOS
+// ================================================================
+const REC_RX_POS = [140, 380, 620];
+const REC_RY_POS = 160;
+
+function drawRec() {
+  drawTitle("RECURSOS COMPARTIDOS + CONCURRENCIA",
+            "Meseros comparten caja, bodega e impresora. Varios trabajan al mismo tiempo.");
+
+  if (recResourceData.length === 0) {
+    fill(160,140,110); textSize(13); textAlign(CENTER,TOP);
+    text("Presiona [ESPACIO] para iniciar", width/2, 280);
+    drawBottomHint(false, "Concurrencia = varios hilos activos. Sincronizacion = acceso ordenado.");
+    return;
+  }
+
+  for (let rid = 0; rid < 3; rid++) {
+    let rd  = recResourceData[rid];
+    let rx  = REC_RX_POS[rid], ry = REC_RY_POS;
+    let rc  = REC_COLORS[rid];
+    let uid = rd.user;
+    let busy = rd.busy && uid >= 0 && uid < THREAD_COLORS.length;
+
+    if (busy) {
+      let uc=THREAD_COLORS[uid]; stroke(uc[0],uc[1],uc[2]); strokeWeight(2); fill(uc[0],uc[1],uc[2],40);
+    } else {
+      stroke(rc[0],rc[1],rc[2]); strokeWeight(1.5); fill(40,25,10);
+    }
+    rect(rx-50, ry-40, 100, 80, 8);
+    fill(rc[0],rc[1],rc[2]); noStroke(); textSize(12); textAlign(CENTER,TOP);
+    text(REC_NAMES[rid], rx, ry-36);
+
+    if (busy) {
+      let uc=THREAD_COLORS[uid];
+      fill(uc[0],uc[1],uc[2]); textSize(10); textAlign(CENTER,TOP);
+      text("M"+(uid+1)+" usando", rx, ry-14);
+      fill(40,25,10); noStroke(); rect(rx-34,ry+10,68,10,3);
+      let user_t = recThreadData.find(t => t.using === rid);
+      if (user_t) {
+        let pw = Math.floor(68*user_t.progress/100);
+        if (pw>0) { fill(uc[0],uc[1],uc[2]); rect(rx-34,ry+10,pw,10,3); }
+      }
+    } else {
+      fill(100,80,40); textSize(10); textAlign(CENTER,CENTER); text("LIBRE", rx, ry);
+    }
+    fill(rc[0],rc[1],rc[2],160); textSize(8); textAlign(CENTER,TOP);
+    text("Recurso compartido", rx, ry+28);
+  }
+
+  fill(180,180,100); textSize(10); textAlign(CENTER,TOP); noStroke();
+  text("< Varios meseros activos al mismo tiempo = CONCURRENCIA >", width/2, REC_RY_POS+52);
+  fill(180,140,80); noStroke(); textSize(11); textAlign(CENTER,TOP);
+  text("MESEROS (Hilos)", width/2, REC_RY_POS+70);
+
+  let cw = Math.floor(width / REC_NUM);
+  recThreadData.forEach(t => {
+    let c  = THREAD_COLORS[t.id % THREAD_COLORS.length];
+    let tx = Math.floor(cw*t.id + cw/2), ty = REC_RY_POS+118;
+
+    if (t.using >= 0) {
+      let rx2=REC_RX_POS[t.using]; stroke(c[0],c[1],c[2],180); strokeWeight(1.5);
+      line(tx,ty-18,rx2,REC_RY_POS+40);
+    } else if (t.waitingFor >= 0) {
+      let rx2=REC_RX_POS[t.waitingFor]; stroke(255,150,50,150); strokeWeight(1);
+      dlDashedLine(tx,ty-18,rx2,REC_RY_POS+40);
+    }
+
+    fill(c[0],c[1],c[2],t.done?100:255); stroke(t.done?color(200,200,200,80):color(255,255,255));
+    strokeWeight(1.5); ellipse(tx,ty,34,34);
+    fill(t.done?color(180):color(255)); noStroke(); textSize(10); textAlign(CENTER,CENTER);
+    text("M"+(t.id+1), tx, ty);
+
+    let st = t.state;
+    if      (st.includes("TERMINO"))   fill(100,220,100);
+    else if (st.includes("USANDO"))    fill(255,200,50);
+    else if (st.includes("ESPERANDO")) fill(200,120,60);
+    else                               fill(160,140,110);
+    textSize(8); textAlign(CENTER,TOP); noStroke();
+    let short = st.replace("ESPERANDO ","ESP.").replace("USANDO ","USA.");
+    text(short, tx, ty+20);
+  });
+
+  fill(20,12,5); noStroke(); rect(30,360,700,125,8);
+  stroke(120,90,40); strokeWeight(1); noFill(); rect(30,360,700,125,8);
+
+  const concepts = [
+    ["CONCURRENCIA",   "Varios meseros trabajan al mismo tiempo"],
+    ["SINCRONIZACION", "Los locks evitan que dos meseros usen el mismo recurso"],
+    ["EXCL. MUTUA",    "Solo 1 mesero por recurso a la vez"],
+    ["RECURSOS COMP.", "Caja, bodega e impresora son compartidos por todos"],
+    ["HILOS",          "Cada mesero es un hilo independiente"],
+  ];
+  concepts.forEach(([concept, desc], idx) => {
+    let c  = THREAD_COLORS[idx % THREAD_COLORS.length];
+    let cx = 48 + (idx%3)*240, cy = 376 + Math.floor(idx/3)*52;
+    fill(c[0],c[1],c[2]); noStroke(); textSize(10); textAlign(LEFT,TOP);
+    text(concept+":", cx, cy);
+    fill(180,160,120); textSize(9); textAlign(LEFT,TOP); text(desc, cx, cy+15);
+  });
+
+  if (recFinished) {
+    fill(30,60,30,220); noStroke(); rect(40,495,680,38,10);
+    fill(80,220,120); textSize(11); textAlign(CENTER,TOP);
+    text("Todos completaron su trabajo. Concurrencia y sincronizacion exitosas.", width/2, 505);
+  }
+  drawBottomHint(recRunning, "Concurrencia = varios hilos activos. Sincronizacion = acceso ordenado a recursos.");
+}
+
+// ================================================================
+// HELPERS
+// ================================================================
+function drawTitle(title, subtitle) {
+  fill(255,220,50); textSize(16); textAlign(CENTER,TOP); noStroke();
+  text(title, width/2, 28);
+  fill(200,170,130); textSize(10); textAlign(CENTER,TOP);
+  text(subtitle, width/2, 50);
+}
+
+function drawBottomHint(isRunning, leyenda) {
+  fill(120,100,70); textSize(10); textAlign(CENTER,TOP); noStroke();
+  if (!isRunning)
+    text("Presiona [ESPACIO] para iniciar  |  [R] Reiniciar  |  [0] Menu", width/2, 544);
+  else
+    text("[R] Reiniciar  |  [0] Menu principal", width/2, 544);
+  fill(140,120,90); textSize(9); textAlign(LEFT,TOP);
+  text(leyenda, 30, 560);
+}
+
+function str(v) { return "" + v; }
+
+// ================================================================
+// TECLADO
+// ================================================================
+function keyPressed() {
+  if (key === '0') { resetAll(); currentMode = 0; return; }
+  if (key === '1') { resetAll(); currentMode = 1; return; }
+  if (key === '2') { resetAll(); currentMode = 2; return; }
+  if (key === '3') { resetAll(); currentMode = 3; return; }
+  if (key === '4') { resetAll(); currentMode = 4; return; }
+  if (key === '5') { resetAll(); currentMode = 5; return; }
+  if (key === '6') { resetAll(); currentMode = 6; return; }
+
+  if (key === ' ') {
+    if      (currentMode===1 && !rcRunning)    rcStart();
+    else if (currentMode===2 && !semRunning)   semStart();
+    else if (currentMode===3 && !mutexRunning) mutexStart();
+    else if (currentMode===4 && !dlRunning)    dlStart();
+    else if (currentMode===5 && !monRunning)   monStart();
+    else if (currentMode===6 && !recRunning)   recStart();
+  }
+
+  if (key === 'r' || key === 'R') {
+    if      (currentMode===1) rcReset();
+    else if (currentMode===2) semReset();
+    else if (currentMode===3) mutexReset();
+    else if (currentMode===4) dlReset();
+    else if (currentMode===5) monReset();
+    else if (currentMode===6) recReset();
+  }
+}
+</script>
+</body>
+</html>
