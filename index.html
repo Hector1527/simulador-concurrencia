@@ -1261,5 +1261,111 @@ function keyPressed() {
   }
 }
 </script>
+<script>
+// ================================================================
+// SOPORTE TACTIL PARA MOVIL
+// ================================================================
+
+// Botones del menu principal
+const menuButtons = [
+  { label: "1", mode: 1 },
+  { label: "2", mode: 2 },
+  { label: "3", mode: 3 },
+  { label: "4", mode: 4 },
+  { label: "5", mode: 5 },
+  { label: "6", mode: 6 },
+];
+
+// Detecta toque y lo convierte en keyPressed equivalente
+function handleTouch(tx, ty) {
+
+  // Si estamos en el menu, detecta toque en cada tarjeta de modo
+  if (currentMode === 0) {
+    for (let i = 0; i < 6; i++) {
+      let by = 178 + i * 68;   // mismo valor que usas en drawMenu
+      if (tx > 80 && tx < width - 80 && ty > by && ty < by + 55) {
+        resetAll();
+        currentMode = i + 1;
+        return;
+      }
+    }
+    return;
+  }
+
+  // Boton INICIAR (mitad izquierda inferior)
+  if (ty > height - 60 && tx < width / 2) {
+    if      (currentMode===1 && !rcRunning)    rcStart();
+    else if (currentMode===2 && !semRunning)   semStart();
+    else if (currentMode===3 && !mutexRunning) mutexStart();
+    else if (currentMode===4 && !dlRunning)    dlStart();
+    else if (currentMode===5 && !monRunning)   monStart();
+    else if (currentMode===6 && !recRunning)   recStart();
+    return;
+  }
+
+  // Boton REINICIAR (mitad derecha inferior)
+  if (ty > height - 60 && tx > width / 2) {
+    if      (currentMode===1) rcReset();
+    else if (currentMode===2) semReset();
+    else if (currentMode===3) mutexReset();
+    else if (currentMode===4) dlReset();
+    else if (currentMode===5) monReset();
+    else if (currentMode===6) recReset();
+    return;
+  }
+
+  // Boton MENU (esquina superior izquierda, topbar)
+  if (ty < 22 && tx < 60) {
+    resetAll();
+    currentMode = 0;
+    return;
+  }
+
+  // Toque en topbar = detecta que modo tocan por posicion
+  if (ty < 22) {
+    let zones = [
+      { x: 15,  mode: 1 },
+      { x: 120, mode: 2 },
+      { x: 215, mode: 3 },
+      { x: 305, mode: 4 },
+      { x: 410, mode: 5 },
+      { x: 510, mode: 6 },
+    ];
+    for (let z of zones) {
+      if (tx > z.x && tx < z.x + 90) {
+        resetAll();
+        currentMode = z.mode;
+        return;
+      }
+    }
+  }
+}
+
+// Registra los eventos de toque en el canvas
+document.addEventListener("DOMContentLoaded", () => {
+  let canvas = document.querySelector("canvas");
+  if (!canvas) {
+    setTimeout(() => {
+      canvas = document.querySelector("canvas");
+      if (canvas) addTouchListeners(canvas);
+    }, 1000);
+  } else {
+    addTouchListeners(canvas);
+  }
+});
+
+function addTouchListeners(canvas) {
+  canvas.addEventListener("touchstart", (e) => {
+    e.preventDefault();
+    let rect  = canvas.getBoundingClientRect();
+    let scaleX = canvas.width  / rect.width;
+    let scaleY = canvas.height / rect.height;
+    let touch  = e.touches[0];
+    let tx = (touch.clientX - rect.left) * scaleX;
+    let ty = (touch.clientY - rect.top)  * scaleY;
+    handleTouch(tx, ty);
+  }, { passive: false });
+}
+</script>
 </body>
 </html>
